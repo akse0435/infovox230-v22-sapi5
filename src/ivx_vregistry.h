@@ -64,6 +64,12 @@ public:
     void set_string(const std::string& path, const std::string& name, const std::string& value);
     void set_dword(const std::string& path, const std::string& name, DWORD value);
 
+    // Forgets a subtree and everything under it. The voice table is written
+    // again whenever the worker notices that voices.ini has changed, and
+    // writing over the old one is not enough: a voice that has been deleted
+    // would keep its key, and the engine would go on offering it.
+    void remove_key(const std::string& path);
+
     // Redirect the engine module's ten registry imports at this tree. Returns
     // false only if the import table could not be rewritten, which is when the
     // caller should fall back to seed_hive().
@@ -92,6 +98,11 @@ public:
     CRITICAL_SECTION* lock() { return &cs_; }
 
 private:
+    // Drops every open handle that points into `node`'s subtree, so a key the
+    // engine still holds after it is removed resolves to nothing rather than to
+    // freed memory. Called with cs_ held.
+    void forget_handles(const VRegKey* node);
+
     VirtualRegistry();
     ~VirtualRegistry();
     VirtualRegistry(const VirtualRegistry&) = delete;

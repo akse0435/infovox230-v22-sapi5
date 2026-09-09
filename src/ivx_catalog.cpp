@@ -94,7 +94,9 @@ std::vector<std::string> ini_section_keys(const std::wstring& path, const wchar_
 
 // Trims a display name down to something that can follow a language name: the
 // "Infovox" prefix and any language name already in it are redundant, and only
-// letters, digits and single spaces survive.
+// letters, digits and single spaces survive. Any of the twelve language names
+// is stripped, not just this voice's, so "Infovox American English Male" moved
+// to French becomes "French Male" rather than "French American English Male".
 std::string mode_suffix(const std::string& display, const std::string& language)
 {
     std::string text = display;
@@ -109,6 +111,9 @@ std::string mode_suffix(const std::string& display, const std::string& language)
     };
     strip_prefix("Infovox");
     strip_prefix(language);
+    for (const BuiltinVoice& b : kBuiltinVoices) {
+        strip_prefix(b.language_name);
+    }
 
     std::string out;
     bool space_pending = false;
@@ -124,6 +129,26 @@ std::string mode_suffix(const std::string& display, const std::string& language)
         }
     }
     return out.empty() ? std::string("Custom") : out;
+}
+
+// The engine reads a mode's SpeakerName to decide which language it is, and
+// drops the mode without a word when that name does not begin with the language
+// the rule file belongs to -- which is how a voice ends up in the Windows voice
+// list and silent. Measured both ways: SpeakerName "French Custom" against
+// frrules.ivx is accepted, "My Custom Speaker" against amrules.ivx is not, and
+// the key the mode is filed under makes no difference either way.
+bool names_language(const std::string& speaker_name, const std::string& language)
+{
+    if (language.empty()) {
+        return true;  // nothing to check it against
+    }
+    if (speaker_name.size() < language.size()) {
+        return false;
+    }
+    if (_strnicmp(speaker_name.c_str(), language.c_str(), language.size()) != 0) {
+        return false;
+    }
+    return speaker_name.size() == language.size() || speaker_name[language.size()] == ' ';
 }
 
 // The id for a user-defined voice.
@@ -214,6 +239,12 @@ void Catalog::load(const std::wstring& module_dir)
     voices_.clear();
     voices_.reserve(_countof(kBuiltinVoices));
 
+    // Taken before anything is read rather than after: a file written while
+    // this is running then reads as changed, and the worker rebuilds once more
+    // for nothing, which is the harmless way round.
+    module_dir_ = module_dir;
+    stamp_ = config_stamp(module_dir);
+
     for (const BuiltinVoice& b : kBuiltinVoices) {
         Voice v;
         v.mode_key = b.mode_key;
@@ -256,6 +287,43 @@ void Catalog::load(const std::wstring& module_dir)
     // a user voice takes its template from it, and a section naming a built-in
     // is what keeps that built-in when the installer left it out.
     apply_installed_selection(module_dir);
+}
+
+unsigned long long Catalog::config_stamp(const std::wstring& module_dir)
+{
+    const std::wstring paths[] = {
+        module_dir.empty() ? std::wstring() : module_dir + L"\\voices.ini",
+        local_appdata_ini(),
+        module_dir.empty() ? std::wstring() : module_dir + L"\\" + kInstalledIni,
+    };
+
+    unsigned long long hash = 1469598103934665603ULL;  // FNV-1a, as slot_for uses
+    auto mix = [&hash](unsigned long long value) {
+        for (int byte = 0; byte < 8; ++byte) {
+            hash ^= (value >> (byte * 8)) & 0xFF;
+            hash *= 1099511628211ULL;
+        }
+    };
+
+    for (const std::wstring& path : paths) {
+        WIN32_FILE_ATTRIBUTE_DATA info = {};
+        if (path.empty() ||
+            !GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &info)) {
+            mix(0);  // not there is a state like any other
+            continue;
+        }
+        mix((static_cast<unsigned long long>(info.ftLastWriteTime.dwHighDateTime) << 32) |
+            info.ftLastWriteTime.dwLowDateTime);
+        // Size as well as time: an edit that lands inside the same timestamp
+        // tick almost always changes the length of the file.
+        mix((static_cast<unsigned long long>(info.nFileSizeHigh) << 32) | info.nFileSizeLow);
+    }
+    return hash;
+}
+
+bool Catalog::config_changed() const
+{
+    return stamp_ != config_stamp(module_dir_);
 }
 
 void Catalog::apply_installed_selection(const std::wstring& install_dir)
@@ -448,7 +516,7 @@ void Catalog::load_user_voices(const std::wstring& ini_path)
             // else -- which is why a voice called "Infovox Something" never
             // reached the enumerator. Built after the settings are applied, so
             // that a section which changes LanguageFile gets the right prefix.
-            const int lang = find_by_language_file(v.language_file);
+            const int lang = find_by_language_file(v.language_file, index);
             if (lang >= 0) {
                 v.language_name = voices_[static_cast<size_t>(lang)].language_name;
             }
@@ -476,6 +544,27 @@ void Catalog::load_user_voices(const std::wstring& ini_path)
             }
             IVX_DEBUG("catalog: \"%s\" is presented to the engine as \"%s\" %s",
                       v.display_name.c_str(), v.mode_key.c_str(), v.mode_guid.c_str());
+        }
+
+        // Every voice, not only the new ones. A new voice is built with a name
+        // that satisfies the engine, but a section that changes a built-in --
+        // its SpeakerName, or its LanguageFile without its SpeakerName -- can
+        // leave one that does not, and the engine's answer to that is to drop
+        // the mode silently. The voice is then in the Windows voice list, in
+        // both bitnesses, and says nothing when it is chosen.
+        {
+            const int lang = find_by_language_file(v.language_file, index);
+            const std::string language =
+                lang >= 0 ? voices_[static_cast<size_t>(lang)].language_name : std::string();
+            if (!names_language(v.speaker_name, language)) {
+                const std::string fixed = language + " " + mode_suffix(v.display_name, language);
+                IVX_WARN("catalog: \"%s\" would be given to the engine as \"%s\", which does "
+                         "not name the language of %s; the engine drops such a mode, so it is "
+                         "given \"%s\" instead",
+                         v.display_name.c_str(), v.speaker_name.c_str(), v.language_file.c_str(),
+                         fixed.c_str());
+                v.speaker_name = fixed;
+            }
         }
 
         IVX_INFO("catalog: %s voice \"%s\" lang=%s file=%s pitch=%s dyn=%s asp=%s formant=%s",
@@ -511,9 +600,12 @@ int Catalog::find_by_mode_key(const std::string& mode_key, int except) const
     return -1;
 }
 
-int Catalog::find_by_language_file(const std::string& language_file) const
+int Catalog::find_by_language_file(const std::string& language_file, int except) const
 {
     for (size_t i = 0; i < voices_.size(); ++i) {
+        if (static_cast<int>(i) == except) {
+            continue;
+        }
         if (!voices_[i].user_defined &&
             _stricmp(voices_[i].language_file.c_str(), language_file.c_str()) == 0) {
             return static_cast<int>(i);
@@ -547,6 +639,11 @@ void Catalog::seed_virtual_registry(const std::string& engine_dir) const
         vr.set_string(kEngineRoot, name, engine_dir);
     }
     IVX_INFO("vreg: engine directories point at %s", engine_dir.c_str());
+
+    // Start from an empty Modes key. Seeding is done again whenever the worker
+    // notices the voice files have changed, and writing over the old table
+    // would leave a voice that has since been deleted still in it.
+    vr.remove_key(kModesRoot);
 
     for (const Voice& v : voices_) {
         const std::string path = std::string(kModesRoot) + "\\" + v.mode_key;

@@ -30,8 +30,14 @@ namespace {
 
 using namespace ivx;
 
+// Everything that touches the engine or the catalogue is done on the one engine
+// thread, so a job is how any other thread asks for it. Listing the voices is a
+// job like speaking is, because the list has to be taken from the catalogue the
+// engine thread may be in the middle of replacing.
 struct Job {
-    bool phonemes = false;
+    enum Kind { Speak, Phonemes, ListVoices };
+
+    Kind kind = Speak;
     std::string mode_guid;
     std::wstring text;
     int rate_step = 0;
@@ -44,12 +50,17 @@ struct Job {
     HANDLE finished = nullptr;
     DoneStatus status = DONE_COMPLETE;
     unsigned long produced = 0;
+    std::vector<VoiceRecord> records;  // ListVoices only
 };
 
 Catalog g_catalog;
 Engine g_engine;
 AudioFormat g_format;
 std::wstring g_engine_dir;
+
+// Read by client threads answering REQ_HELLO, which must not walk the catalogue
+// while the engine thread is replacing it.
+volatile LONG g_voice_count = 0;
 
 CRITICAL_SECTION g_queue_cs;
 std::deque<Job*> g_queue;
@@ -103,6 +114,20 @@ bool read_all(HANDLE pipe, void* data, DWORD size)
     return true;
 }
 
+// The thread that accepts connections sits inside ConnectNamedPipe and will not
+// look at g_quit until something connects. Connecting to our own pipe and
+// dropping it again is what lets it look. Without this the worker stays alive
+// until the next client arrives -- and that client is then served by a worker
+// that is on its way out.
+void poke_accept_loop()
+{
+    HANDLE poke = CreateFileW(pipe_name().c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+                              OPEN_EXISTING, 0, nullptr);
+    if (poke != INVALID_HANDLE_VALUE) {
+        CloseHandle(poke);
+    }
+}
+
 // --- the engine thread -----------------------------------------------------
 
 // SAPI expresses rate and pitch as a step from -10 to 10 with no defined units.
@@ -147,8 +172,99 @@ bool wants_audio(const std::wstring& tagged)
     return false;
 }
 
+// Reads the voice files again and hands the engine the table they describe.
+// Engine thread only.
+//
+// This is the difference between a voice that exists and a voice that speaks.
+// Creating one writes it into voices.ini and registers a SAPI5 token for it, in
+// both bitnesses -- and registering runs in a process of its own, which reads
+// the file and therefore sees it. The worker does not: it read the file when it
+// started, and it starts once per logon session. So the new voice appeared in
+// every application's voice list and said nothing when it was chosen, because
+// the engine had never been told the mode existed and refused to select it.
+bool refresh_catalog()
+{
+    Catalog fresh;
+    fresh.load(ivx::install_dir());
+    if (fresh.voices().empty()) {
+        IVX_WARN("server: the voice files now describe no voices at all; keeping the ones "
+                 "already loaded");
+        return false;
+    }
+
+    g_catalog = std::move(fresh);
+    InterlockedExchange(&g_voice_count, static_cast<LONG>(g_catalog.size()));
+
+    if (!InterlockedCompareExchange(&g_engine_ready, 0, 0)) {
+        return false;  // nothing to hand it to; the settings are still updated
+    }
+    if (!g_engine.reload(g_catalog)) {
+        // Nothing here can recover an engine that would not come back up, but a
+        // worker is cheap and the next one starts by reading the files. Stand
+        // down rather than stay up unable to speak: the client's next utterance
+        // finds no worker and starts one.
+        IVX_ERROR("server: the engine would not take the new voice table; stopping, so the next "
+                  "client gets a worker that has read the files afresh");
+        InterlockedExchange(&g_engine_ready, 0);
+        SetEvent(g_quit);
+        poke_accept_loop();
+        return false;
+    }
+    g_format = g_engine.format();
+    IVX_INFO("server: voice table refreshed, %u voices", static_cast<unsigned>(g_catalog.size()));
+    return true;
+}
+
+// Cheap enough to do before every job: three file stamps, and nothing else
+// unless one of them moved.
+bool refresh_if_stale()
+{
+    if (!g_catalog.config_changed()) {
+        return false;
+    }
+    IVX_INFO("server: the voice files have changed since this worker started; reading them "
+             "again");
+    return refresh_catalog();
+}
+
+// Engine thread: fills in the job's records from the catalogue as it stands
+// once refresh_if_stale() has had its look, so the list a client is given is the
+// list the engine can actually speak with.
+void collect_voices(Job* job)
+{
+    std::vector<VoiceRecord>& records = job->records;
+    records.reserve(g_catalog.size());
+    for (const Voice& v : g_catalog.voices()) {
+        VoiceRecord r = {};
+        const std::wstring name = v.sapi_name();
+        wcsncpy_s(r.display_name, name.c_str(), _TRUNCATE);
+        strncpy_s(r.mode_guid, v.mode_guid.c_str(), _TRUNCATE);
+        r.lcid = v.lcid;
+        r.gender = static_cast<uint16_t>(v.gender.empty() ? 0 : atoi(v.gender.c_str()));
+        r.age = static_cast<uint16_t>(v.age.empty() ? 30 : atoi(v.age.c_str()));
+        r.user_defined = v.user_defined ? 1u : 0u;
+        // The engine reports the same limits for every mode; the per-voice
+        // default is what differs, and it is only known once selected. Report
+        // the limits and let the client scale against them.
+        r.rate_min = g_engine.rate_min();
+        r.rate_max = g_engine.rate_max();
+        r.rate_default = g_engine.rate_default();
+        r.pitch_min = g_engine.pitch_min();
+        r.pitch_max = g_engine.pitch_max();
+        r.pitch_default = g_engine.pitch_default();
+        records.push_back(r);
+    }
+}
+
 void run_job(Job* job)
 {
+    refresh_if_stale();
+
+    if (job->kind == Job::ListVoices) {
+        collect_voices(job);
+        return;
+    }
+
     if (!InterlockedCompareExchange(&g_engine_ready, 0, 0)) {
         job->status = DONE_ENGINE_ERROR;
         return;
@@ -156,8 +272,18 @@ void run_job(Job* job)
 
     if (!job->mode_guid.empty() && job->mode_guid != g_engine.selected()) {
         if (!g_engine.select(job->mode_guid)) {
-            job->status = DONE_ENGINE_ERROR;
-            return;
+            // A voice the engine does not know. Usually that is a voice defined
+            // since the last look at the files, and the stamp missed it --
+            // an editor that restores the old timestamp, or a file copied back
+            // over the top. Read them again unconditionally and try once more,
+            // because the alternative is a voice that is silent until the user
+            // logs out.
+            IVX_WARN("server: no mode %s; reading the voice files again before giving up",
+                     job->mode_guid.c_str());
+            if (!refresh_catalog() || !g_engine.select(job->mode_guid)) {
+                job->status = DONE_ENGINE_ERROR;
+                return;
+            }
         }
         // The format is fixed for this engine, but read it back per selection
         // rather than assuming.
@@ -226,7 +352,7 @@ void run_job(Job* job)
               job->rate_step, rate, job->pitch_step, pitch, job->volume_pct);
 
     bool ok;
-    if (job->phonemes) {
+    if (job->kind == Job::Phonemes) {
         ok = g_engine.speak_phonemes(job->text, job->ipa, on_pcm, cancelled, job->timeout_ms);
     } else {
         const std::wstring prologue = format_prologue(rate, pitch, job->volume_pct);
@@ -279,6 +405,7 @@ DWORD WINAPI engine_thread(LPVOID)
             g_format = g_engine.format();
         }
         InterlockedExchange(&g_engine_ready, 1);
+        InterlockedExchange(&g_voice_count, static_cast<LONG>(g_catalog.size()));
         IVX_INFO("server: engine ready, %u voices, %lu Hz %u-bit %u channel(s)",
                  static_cast<unsigned>(g_catalog.size()), g_format.samples_per_sec, g_format.bits,
                  g_format.channels);
@@ -316,6 +443,23 @@ DWORD WINAPI engine_thread(LPVOID)
         }
     }
 
+    // Whatever is still queued is answered rather than abandoned: a client
+    // thread is blocked on each of these.
+    for (;;) {
+        Job* job = nullptr;
+        EnterCriticalSection(&g_queue_cs);
+        if (!g_queue.empty()) {
+            job = g_queue.front();
+            g_queue.pop_front();
+        }
+        LeaveCriticalSection(&g_queue_cs);
+        if (!job) {
+            break;
+        }
+        job->status = DONE_ENGINE_ERROR;
+        SetEvent(job->finished);
+    }
+
     g_engine.unload();
     CoUninitialize();
     IVX_INFO("server: engine thread stopped");
@@ -328,9 +472,26 @@ bool submit(Job* job)
     if (!job->finished) {
         return false;
     }
+
+    // g_quit is read under the queue's own lock, and the engine thread empties
+    // the queue after setting it, so a job is either taken by that thread or
+    // refused here -- never left on a queue nobody will look at again while the
+    // client thread waits on it for ever.
     EnterCriticalSection(&g_queue_cs);
-    g_queue.push_back(job);
+    const bool leaving = WaitForSingleObject(g_quit, 0) == WAIT_OBJECT_0;
+    if (!leaving) {
+        g_queue.push_back(job);
+    }
     LeaveCriticalSection(&g_queue_cs);
+
+    if (leaving) {
+        IVX_DEBUG("server: this worker is stopping; the client will start another");
+        job->status = DONE_ENGINE_ERROR;
+        CloseHandle(job->finished);
+        job->finished = nullptr;
+        return false;
+    }
+
     SetEvent(g_job_ready);
     WaitForSingleObject(job->finished, INFINITE);
     CloseHandle(job->finished);
@@ -340,37 +501,20 @@ bool submit(Job* job)
 
 // --- connection handling ---------------------------------------------------
 
+// Client thread: asks the engine thread for the list, then writes it out.
 void send_voices(HANDLE pipe)
 {
-    std::vector<VoiceRecord> records;
-    records.reserve(g_catalog.size());
-    for (const Voice& v : g_catalog.voices()) {
-        VoiceRecord r = {};
-        const std::wstring name = v.sapi_name();
-        wcsncpy_s(r.display_name, name.c_str(), _TRUNCATE);
-        strncpy_s(r.mode_guid, v.mode_guid.c_str(), _TRUNCATE);
-        r.lcid = v.lcid;
-        r.gender = static_cast<uint16_t>(v.gender.empty() ? 0 : atoi(v.gender.c_str()));
-        r.age = static_cast<uint16_t>(v.age.empty() ? 30 : atoi(v.age.c_str()));
-        r.user_defined = v.user_defined ? 1u : 0u;
-        // The engine reports the same limits for every mode; the per-voice
-        // default is what differs, and it is only known once selected. Report
-        // the limits and let the client scale against them.
-        r.rate_min = g_engine.rate_min();
-        r.rate_max = g_engine.rate_max();
-        r.rate_default = g_engine.rate_default();
-        r.pitch_min = g_engine.pitch_min();
-        r.pitch_max = g_engine.pitch_max();
-        r.pitch_default = g_engine.pitch_default();
-        records.push_back(r);
-    }
+    Job job;
+    job.kind = Job::ListVoices;
+    job.pipe = pipe;
+    submit(&job);
 
-    std::vector<char> payload(sizeof(uint32_t) + records.size() * sizeof(VoiceRecord));
-    const uint32_t count = static_cast<uint32_t>(records.size());
+    std::vector<char> payload(sizeof(uint32_t) + job.records.size() * sizeof(VoiceRecord));
+    const uint32_t count = static_cast<uint32_t>(job.records.size());
     memcpy(payload.data(), &count, sizeof(count));
-    if (!records.empty()) {
-        memcpy(payload.data() + sizeof(count), records.data(),
-               records.size() * sizeof(VoiceRecord));
+    if (!job.records.empty()) {
+        memcpy(payload.data() + sizeof(count), job.records.data(),
+               job.records.size() * sizeof(VoiceRecord));
     }
     write_frame(pipe, RSP_VOICES, payload.data(), static_cast<uint32_t>(payload.size()));
 }
@@ -391,7 +535,7 @@ void handle_speak(HANDLE pipe, const std::vector<char>& payload, bool phonemes)
 {
     Job job;
     job.pipe = pipe;
-    job.phonemes = phonemes;
+    job.kind = phonemes ? Job::Phonemes : Job::Speak;
 
     if (phonemes) {
         if (payload.size() < sizeof(PhonemeRequest)) {
@@ -478,7 +622,8 @@ DWORD WINAPI client_thread(LPVOID param)
             case REQ_HELLO: {
                 HelloResponse hello = {};
                 hello.version = kProtocolVersion;
-                hello.voice_count = static_cast<uint32_t>(g_catalog.size());
+                hello.voice_count =
+                    static_cast<uint32_t>(InterlockedCompareExchange(&g_voice_count, 0, 0));
                 hello.samples_per_sec = g_format.samples_per_sec;
                 hello.avg_bytes_per_sec = g_format.avg_bytes_per_sec;
                 hello.channels = g_format.channels;
@@ -502,21 +647,11 @@ DWORD WINAPI client_thread(LPVOID param)
                 write_frame(pipe, RSP_OK);
                 IVX_INFO("server: shutdown requested by a client");
                 SetEvent(g_quit);
-                // The thread that accepts connections is sitting inside
-                // ConnectNamedPipe and will not look at g_quit until something
-                // connects. Connecting to our own pipe and dropping it again is
-                // what lets it look. Without this the worker stays alive until
-                // the next client arrives -- and that client is then served by
-                // a worker that is on its way out, which is exactly what
+                // Which the accept loop has to be told about, or it serves the
+                // next client from a worker on its way out -- exactly what
                 // happens when the configuration utility restarts the engine to
                 // preview a voice it has just defined.
-                {
-                    HANDLE poke = CreateFileW(pipe_name().c_str(), GENERIC_READ | GENERIC_WRITE, 0,
-                                              nullptr, OPEN_EXISTING, 0, nullptr);
-                    if (poke != INVALID_HANDLE_VALUE) {
-                        CloseHandle(poke);
-                    }
-                }
+                poke_accept_loop();
                 break;
             default:
                 write_error(pipe, "unknown request");

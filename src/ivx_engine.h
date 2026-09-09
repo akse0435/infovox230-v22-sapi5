@@ -75,6 +75,16 @@ public:
     void unload();
     bool loaded() const { return enum_ != nullptr; }
 
+    // Hands the engine a voice table it has not seen. The mode list is read out
+    // of the virtual registry once, when the enumerator is made, so a voice
+    // defined after the worker started is invisible to a worker that has one --
+    // and a worker lives as long as the logon session. Writing the table again
+    // and building a fresh enumerator is what lets a running worker speak with
+    // a voice that has just been created, without a restart that would cut a
+    // screen reader off mid-sentence. Drops the current selection; the caller
+    // selects again.
+    bool reload(const Catalog& catalog);
+
     const std::vector<ModeInfo>& modes() const { return modes_; }
     const AudioFormat& format() const { return format_; }
 
@@ -113,6 +123,7 @@ public:
     unsigned long registry_calls() const;
 
 private:
+    bool create_enumerator();
     bool enumerate_modes();
     void query_ranges();
     void release_current();
@@ -133,6 +144,7 @@ private:
     AudioFormat format_;
     std::string selected_guid_;
     std::wstring engine_dir_;
+    std::wstring dll_path_;  // the module load() settled on, for reload()
     unsigned long selected_features_ = 0;
 
     int rate_min_ = 0;

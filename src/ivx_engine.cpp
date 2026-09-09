@@ -516,6 +516,7 @@ bool Engine::load(const std::wstring& engine_dir, const Catalog& catalog)
         IVX_ERROR("engine: Ivx230nt.dll not found in %S", engine_dir.c_str());
         return false;
     }
+    dll_path_ = dll;
 
     // LOAD_WITH_ALTERED_SEARCH_PATH makes the engine's own folder the first
     // place its dependencies are looked for, which is how sx32w.dll and
@@ -543,32 +544,10 @@ bool Engine::load(const std::wstring& engine_dir, const Catalog& catalog)
         }
     }
 
-    using DllGetClassObjectFn = HRESULT(STDAPICALLTYPE*)(REFCLSID, REFIID, void**);
-    auto get_class_object =
-        reinterpret_cast<DllGetClassObjectFn>(GetProcAddress(module_, "DllGetClassObject"));
-    if (!get_class_object) {
-        IVX_ERROR("engine: the dll does not export DllGetClassObject");
+    if (!create_enumerator()) {
         unload();
         return false;
     }
-
-    IClassFactory* factory = nullptr;
-    HRESULT hr = get_class_object(CLSID_InfovoxEngine, IID_IClassFactory,
-                                  reinterpret_cast<void**>(&factory));
-    if (FAILED(hr) || !factory) {
-        IVX_ERROR("engine: DllGetClassObject failed: %s", hr_error(hr));
-        unload();
-        return false;
-    }
-
-    hr = factory->CreateInstance(nullptr, __uuidof(ITTSEnumW), reinterpret_cast<void**>(&enum_));
-    factory->Release();
-    if (FAILED(hr) || !enum_) {
-        IVX_ERROR("engine: the class factory would not make a mode enumerator: %s", hr_error(hr));
-        unload();
-        return false;
-    }
-    IVX_INFO("engine: mode enumerator created without the SAPI4 runtime");
 
     if (!enumerate_modes()) {
         unload();
@@ -587,12 +566,102 @@ void Engine::unload()
     if (module_) {
         VirtualRegistry::instance().uninstall();
         VirtualRegistry::instance().release_hive();
-        // The engine is deliberately NOT FreeLibrary'd: it registers window
-        // classes and a thread-local state that it does not tear down, and
-        // unloading it after that has been seen to fault on exit. The worker
-        // process ending releases it.
+        // The engine is deliberately NOT FreeLibrary'd here: it registers
+        // window classes and a thread-local state that it does not tear down,
+        // and unloading it on the way out of the process has been seen to
+        // fault. The process ending releases it. reload() does free it, but
+        // only to load it again immediately, which it stands up to -- see
+        // there.
         module_ = nullptr;
     }
+}
+
+// The enumerator is where the engine reads its whole configuration: making one
+// is what turns the voice table in memory into the modes it will offer.
+bool Engine::create_enumerator()
+{
+    if (!module_) {
+        return false;
+    }
+    using DllGetClassObjectFn = HRESULT(STDAPICALLTYPE*)(REFCLSID, REFIID, void**);
+    auto get_class_object =
+        reinterpret_cast<DllGetClassObjectFn>(GetProcAddress(module_, "DllGetClassObject"));
+    if (!get_class_object) {
+        IVX_ERROR("engine: the dll does not export DllGetClassObject");
+        return false;
+    }
+
+    IClassFactory* factory = nullptr;
+    HRESULT hr = get_class_object(CLSID_InfovoxEngine, IID_IClassFactory,
+                                  reinterpret_cast<void**>(&factory));
+    if (FAILED(hr) || !factory) {
+        IVX_ERROR("engine: DllGetClassObject failed: %s", hr_error(hr));
+        return false;
+    }
+
+    hr = factory->CreateInstance(nullptr, __uuidof(ITTSEnumW), reinterpret_cast<void**>(&enum_));
+    factory->Release();
+    if (FAILED(hr) || !enum_) {
+        IVX_ERROR("engine: the class factory would not make a mode enumerator: %s", hr_error(hr));
+        return false;
+    }
+    IVX_INFO("engine: mode enumerator created without the SAPI4 runtime");
+    return true;
+}
+
+bool Engine::reload(const Catalog& catalog)
+{
+    if (!module_ || dll_path_.empty()) {
+        return false;
+    }
+    if (!VirtualRegistry::instance().installed()) {
+        // The hive fallback is in use, and re-seeding a hive the engine has
+        // already opened is a different problem from this one. Say no; the
+        // worker stands down and the next one reads the files at start-up.
+        IVX_WARN("engine: the configuration is coming from a hive, not the import table; "
+                 "the voice table cannot be rebuilt in place");
+        return false;
+    }
+
+    // Everything belonging to the old table goes first: the current selection,
+    // its sinks, and the enumerator that produced it.
+    release_current();
+    safe_release(enum_);
+
+    // And then the engine itself, because a second enumerator is not enough.
+    // The engine builds its mode table once per process -- measured: an
+    // enumerator made after the table was rewritten costs sixteen configuration
+    // reads and hands back exactly the modes the first one did, the new ones
+    // nowhere among them. That table is built when the module comes up, so the
+    // module has to go down and come up again. Measured at about twenty
+    // milliseconds for sixty-one voices and, unlike restarting the worker, it
+    // does not cut off a screen reader in the middle of a sentence in some
+    // other voice.
+    VirtualRegistry::instance().uninstall();
+    HMODULE going = module_;
+    module_ = nullptr;
+    FreeLibrary(going);
+
+    catalog.seed_virtual_registry(narrow(engine_dir_));
+
+    module_ = LoadLibraryExW(dll_path_.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+    if (!module_) {
+        IVX_ERROR("engine: could not load %S again: %s", dll_path_.c_str(),
+                  win_error(GetLastError()));
+        return false;
+    }
+    if (!VirtualRegistry::instance().install(module_)) {
+        IVX_ERROR("engine: the reloaded module would not take its configuration");
+        return false;
+    }
+
+    if (!create_enumerator() || !enumerate_modes()) {
+        IVX_ERROR("engine: the voice table could not be rebuilt");
+        return false;
+    }
+    IVX_INFO("engine: voice table rebuilt: %u modes",
+             static_cast<unsigned>(modes_.size()));
+    return true;
 }
 
 bool Engine::enumerate_modes()

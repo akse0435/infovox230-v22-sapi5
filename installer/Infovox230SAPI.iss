@@ -35,7 +35,7 @@
 
 #define AppName "Infovox 230 SAPI5 Voices"
 #define AppShortName "Infovox 230"
-#define AppVersion "1.1.0"
+#define AppVersion "1.1.1"
 #define AppPublisher "Infovox 230 SAPI5 project"
 #define StageDir "..\output"
 

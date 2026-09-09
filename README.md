@@ -95,7 +95,7 @@ silence is generated as exact PCM; `\Chr=` letter mode does nothing, so
 spelling separates the characters; the engine reports no viseme information at
 all, so none is offered.
 
-Five traps worth knowing, each of which cost a measurement to find:
+Six traps worth knowing, each of which cost a measurement to find:
 
 - **The engine paces itself against the sound card.** It delivers one second of
   audio and then waits about 200 ms for its own timer before delivering the
@@ -120,6 +120,14 @@ Five traps worth knowing, each of which cost a measurement to find:
   through, that is most of a second of dead air after everything a screen reader
   says, so the SAPI layer holds back trailing quiet and drops it — while keeping
   pauses that turn out to have speech after them.
+- **The mode table is built once per process.** Writing a new voice into the
+  configuration and asking the engine for a fresh mode enumerator costs sixteen
+  configuration reads and hands back exactly the modes the first one did. So a
+  voice defined after the worker started was one the worker could never select,
+  and a worker lives as long as the logon session. It now watches the voice
+  files, and when they change it puts `Ivx230nt.dll` down and back up again —
+  a couple of hundredths of a second, measured — rather than restarting and
+  cutting off a screen reader mid-sentence.
 
 Word positions are reported relative to everything the engine was handed, and
 its timestamps are byte offsets *within the current second of output* rather
@@ -148,7 +156,7 @@ is told:
 | `BasedOn` | copy an existing voice's settings first, then apply the rest |
 | `LanguageFile`, `LanguageID`, `LCID` | which of the twelve languages, and what the voice reports itself as |
 | `Gender`, `Age` | what programs report; no effect on the sound |
-| `SpeakerName`, `SpeakerStyle` | the names the engine is given |
+| `SpeakerName`, `SpeakerStyle` | the names the engine is given. `SpeakerName` has to begin with the language of the voice's rule file: the engine drops a mode whose name it cannot place, and that is a voice which appears in Windows and says nothing, so the catalogue checks it and corrects it — noting in the log when it has to |
 | `LibraryFile`, `PhSymFile`, `DiphoneFile`, `MappingFile` | data files the engine will look for; unset in every built-in voice |
 
 **Engine-wide**, in a `[Settings]` section of the same file
@@ -246,6 +254,24 @@ wire protocol, and the SAPI5 engine itself.
 ## Releases
 
 Installers are on the [releases page](https://github.com/joshknnd1982/infovox230sapi5/releases).
+
+**1.1.1** — a voice you have just made speaks straight away.
+
+- Fixed: a new voice was published to the Windows voice list, in both
+  bitnesses, and then said nothing when it was chosen. The worker that owns the
+  engine reads `voices.ini` once, when it starts — and it starts once per logon
+  session, so a voice created after that was one the engine had never been told
+  about, and selecting it failed. The worker now notices when the voice files
+  have been written and rebuilds the engine's table, without interrupting
+  whatever is speaking at the time.
+- Fixed: changing a built-in voice's `SpeakerName`, or its language without its
+  `SpeakerName`, left it silent in the same way. The engine drops a mode whose
+  `SpeakerName` does not begin with the language of its rule file; that rule was
+  enforced for the names the catalogue makes up and not for the ones written in
+  `voices.ini`. It is now checked for every voice.
+- The voice list the worker reports is taken after that check rather than
+  before, so `Infovox230Diag list`, the configuration utility and what can
+  actually be spoken cannot disagree.
 
 **1.1.0** — choose what gets installed.
 

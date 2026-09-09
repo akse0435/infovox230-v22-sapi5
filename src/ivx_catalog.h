@@ -101,6 +101,13 @@ public:
     // property of one voice.
     const EngineSettings& settings() const { return settings_; }
 
+    // True when one of the files load() read has been written since it read
+    // them. The worker owns the engine for a whole logon session, so without
+    // this a voice defined after it started is in the Windows voice list --
+    // registering is a separate process, which does see it -- and yet cannot be
+    // spoken, because the engine was given its table once and never again.
+    bool config_changed() const;
+
     size_t size() const { return voices_.size(); }
 
     // Index of the voice whose display name matches, or -1.
@@ -111,10 +118,12 @@ public:
     // built can test its own candidate name for collisions.
     int find_by_mode_key(const std::string& mode_key, int except = -1) const;
 
-    // First voice whose LanguageFile matches, which is how a user-defined
-    // voice's language -- and so the prefix its engine name must carry -- is
-    // worked out.
-    int find_by_language_file(const std::string& language_file) const;
+    // First voice whose LanguageFile matches, which is how a voice's language --
+    // and so the prefix the name the engine is given must carry -- is worked
+    // out. `except` skips one entry, which matters when the voice asking is a
+    // built-in whose LanguageFile has been changed: without it, it finds itself
+    // and concludes that its old name was right all along.
+    int find_by_language_file(const std::string& language_file, int except = -1) const;
 
     // Write the whole catalogue, plus the engine's own directory settings, into
     // the virtual registry. `engine_dir` is where Ivx230nt.dll and the .ivx rule
@@ -124,6 +133,11 @@ public:
 private:
     void load_user_voices(const std::wstring& ini_path);
 
+    // Existence, size and last-write time of the files load() reads, mixed
+    // together. Compared rather than interpreted, so the clock going backwards
+    // still counts as a change.
+    static unsigned long long config_stamp(const std::wstring& module_dir);
+
     // Reduces the built-ins to the ones the installer put there: the voices
     // named in installed.ini, and only those whose language rule files are on
     // disk. Runs last, so a user voice can still take any built-in as its
@@ -132,6 +146,8 @@ private:
 
     std::vector<Voice> voices_;
     EngineSettings settings_;
+    std::wstring module_dir_;
+    unsigned long long stamp_ = 0;
 };
 
 }  // namespace ivx

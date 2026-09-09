@@ -3,6 +3,7 @@
 #include "ivx_log.h"
 
 #include <cstring>
+#include <set>
 
 namespace ivx {
 namespace {
@@ -489,6 +490,45 @@ void VirtualRegistry::set_string(const std::string& path, const std::string& nam
         v.type = REG_SZ;
         v.data.assign(value.c_str(), value.size() + 1);  // include the NUL
         node->values[name] = v;
+    }
+    LeaveCriticalSection(&cs_);
+}
+
+void VirtualRegistry::forget_handles(const VRegKey* node)
+{
+    std::set<const VRegKey*> going;
+    std::vector<const VRegKey*> pending{node};
+    while (!pending.empty()) {
+        const VRegKey* current = pending.back();
+        pending.pop_back();
+        if (!current || !going.insert(current).second) {
+            continue;
+        }
+        for (const auto& child : current->children) {
+            pending.push_back(child.second.get());
+        }
+    }
+    for (auto it = handles_.begin(); it != handles_.end();) {
+        if (going.count(it->second)) {
+            it = handles_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void VirtualRegistry::remove_key(const std::string& path)
+{
+    EnterCriticalSection(&cs_);
+    const size_t cut = path.find_last_of('\\');
+    VRegKey* parent = cut == std::string::npos ? &root_ : root_.child(path.substr(0, cut), false);
+    const std::string leaf = cut == std::string::npos ? path : path.substr(cut + 1);
+    if (parent) {
+        auto it = parent->children.find(leaf);
+        if (it != parent->children.end()) {
+            forget_handles(it->second.get());
+            parent->children.erase(it);
+        }
     }
     LeaveCriticalSection(&cs_);
 }

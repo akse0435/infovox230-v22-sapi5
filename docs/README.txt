@@ -173,7 +173,8 @@ Save writes the voices to a file. "Publish voices to Windows" is the separate
 step that puts them in the Windows voice list where your programs will find
 them; it needs administrator permission, and Windows asks for it at that point
 rather than the utility demanding it for everything else. A program that is
-already running will not see a new voice until it is restarted.
+already running will not see a new voice until it is restarted; nothing else
+needs restarting, and the voice speaks the first time it is asked to.
 
 Voices can be kept for just you (%LOCALAPPDATA%\Infovox230SAPI\voices.ini) or
 for everybody (voices.ini in the installation folder). "Just me" needs no
@@ -232,7 +233,10 @@ hertz, so useful values run from about 27 to 99. The built-in male voice uses
 You can call your voice anything. Behind the scenes it is given a name starting
 with its language, because the engine checks that and quietly ignores any voice
 whose name it does not recognise; that renaming is done for you and does not
-change what you or your programs see.
+change what you or your programs see. The same check is applied to a SpeakerName
+you write yourself, and to a built-in voice you have moved to another language,
+so that neither can leave you with a voice that is in the list and cannot speak.
+When it has to correct one, it says so in the log.
 
 The same file's [Settings] section holds the engine-wide settings the utility's
 Engine settings page writes. voices.example.ini lists all of them.
