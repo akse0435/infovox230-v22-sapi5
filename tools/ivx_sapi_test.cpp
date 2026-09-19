@@ -249,7 +249,8 @@ const Voice* voice_named(const std::vector<Voice>& voices, const std::wstring& n
 
 const Voice* test_voice(const std::vector<Voice>& voices)
 {
-    for (const wchar_t* name : {L"Infovox American English Male", L"Infovox British English Male"}) {
+    for (const wchar_t* name :
+         {L"Infovox230 American English Male", L"Infovox230 British English Male"}) {
         if (const Voice* v = voice_named(voices, name)) {
             return v;
         }

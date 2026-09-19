@@ -38,7 +38,7 @@ def to_lcid(language_id):
 # well ("American English Male"); the prefix is what makes it identifiable when
 # it sits in a list next to other vendors' voices.
 def display_name(mode_name):
-    return "Infovox " + mode_name
+    return "Infovox230 " + mode_name
 
 
 # The engine will only accept a mode whose key name begins with the name of the
