@@ -49,6 +49,17 @@ std::wstring attribute(ISpObjectToken* token, const wchar_t* name)
     return out;
 }
 
+const wchar_t kEngineClsid[] = L"{63C14391-7273-4266-83A3-BD29F60EC6DB}";
+
+bool ours(ISpObjectToken* token)
+{
+    LPWSTR clsid = nullptr;
+    const bool match = SUCCEEDED(token->GetStringValue(L"CLSID", &clsid)) && clsid &&
+                       _wcsicmp(clsid, kEngineClsid) == 0;
+    CoTaskMemFree(clsid);
+    return match;
+}
+
 bool collect_voices(std::vector<Voice>* out, bool infovox_only)
 {
     ISpObjectTokenCategory* category = nullptr;
@@ -87,7 +98,7 @@ bool collect_voices(std::vector<Voice>* out, bool infovox_only)
         v.vendor = attribute(token, L"Vendor");
         v.mode = attribute(token, L"InfovoxModeGUID");
         v.user_defined = attribute(token, L"InfovoxUserDefined") == L"1";
-        if (infovox_only && _wcsicmp(v.vendor.c_str(), L"Infovox") != 0) {
+        if (infovox_only && !ours(token)) {
             token->Release();
             continue;
         }
