@@ -106,8 +106,10 @@ text is split at the tag, and the rest goes to the voice named exactly as if the
 program had chosen it, at the rate, pitch and volume the program asked for.
 `Speaker` is one of this engine's own voices, by its name or the first name
 containing it; `Language` keeps the kind of voice, so Swedish Male becomes
-German Male. `Gender` and `Age` go to the engine, which changes only the vocal
-tract shape and needs their values in quotes, which are added when left out.
+German Male. `Gender` and `Age` go to the engine, which changes the pitch and
+vocal tract shape of the voice in use rather than changing voice, and needs
+their values in quotes, which are added when left out. `Age` takes a word such
+as `child` or `adult`; a number is ignored.
 
 Does not work, and is handled here instead: `\Pau=` produces no pause, so
 silence is generated as exact PCM; `\Chr=` letter mode does nothing, so
