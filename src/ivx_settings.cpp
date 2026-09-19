@@ -13,6 +13,7 @@ const wchar_t kTrimTrailingSilence[] = L"TrimTrailingSilence";
 const wchar_t kSilenceThreshold[] = L"SilenceThreshold";
 const wchar_t kWordEvents[] = L"WordEvents";
 const wchar_t kSentenceEvents[] = L"SentenceEvents";
+const wchar_t kControlTags[] = L"ControlTags";
 const wchar_t kTimeoutBaseMs[] = L"TimeoutBaseMs";
 const wchar_t kTimeoutPerCharMs[] = L"TimeoutPerCharMs";
 const wchar_t kRateMin[] = L"RateMin";
@@ -92,6 +93,7 @@ void EngineSettings::merge_from(const std::wstring& ini_path)
     read_int(ini_path, settings_key::kSilenceThreshold, &silence_threshold);
     read_bool(ini_path, settings_key::kWordEvents, &word_events);
     read_bool(ini_path, settings_key::kSentenceEvents, &sentence_events);
+    read_bool(ini_path, settings_key::kControlTags, &control_tags);
     read_int(ini_path, settings_key::kTimeoutBaseMs, &timeout_base_ms);
     read_int(ini_path, settings_key::kTimeoutPerCharMs, &timeout_per_char_ms);
     read_int(ini_path, settings_key::kRateMin, &rate_min);
@@ -121,11 +123,12 @@ void EngineSettings::merge_from(const std::wstring& ini_path)
         timeout_per_char_ms = 0;
     }
 
-    IVX_INFO("settings: read from %S (trim=%d level=%d words=%d sentences=%d "
+    IVX_INFO("settings: read from %S (trim=%d level=%d words=%d sentences=%d tags=%d "
              "timeout=%d+%d rate=%d..%d/%d pitch=%d..%d/%d)",
              ini_path.c_str(), trim_trailing_silence ? 1 : 0, silence_threshold,
-             word_events ? 1 : 0, sentence_events ? 1 : 0, timeout_base_ms, timeout_per_char_ms,
-             rate_min, rate_max, rate_default, pitch_min, pitch_max, pitch_default);
+             word_events ? 1 : 0, sentence_events ? 1 : 0, control_tags ? 1 : 0, timeout_base_ms,
+             timeout_per_char_ms, rate_min, rate_max, rate_default, pitch_min, pitch_max,
+             pitch_default);
 }
 
 }  // namespace ivx

@@ -121,6 +121,16 @@ milliseconds, measured through Windows speech at twenty keypresses a second.
 Speech is synthesised at roughly fifty times faster than it is spoken, so the
 engine is never what you are waiting for.
 
+The engine's own control tags can be written straight into the text, as SAPI 4
+programs allowed: \Pit=30\ for a very deep voice, \Spd=250\ for speed,
+\Vol=32768\ for loudness, \Pau=500\ for a pause in milliseconds, \Rst\ to go
+back to the voice's own settings and \Vce=Speaker="Swedish Female"\ for another
+Infovox voice -- the first one whose name contains what is between the quotes.
+A tag lasts until the end of what the program hands over in one go, and then
+the program's own voice and settings come back. Anything that is not exactly a
+tag is read as text, and the tags can be turned off under Engine settings in
+the configuration utility.
+
 Two things this engine cannot do, so you know not to look for them: it produces
 no mouth-shape (viseme) information for talking-head animation, and its own
 pause tag does nothing. Pauses asked for in speech markup are produced by
@@ -225,10 +235,9 @@ in %LOCALAPPDATA%\Infovox230SAPI\ for just yourself -- edit it, then use
 and anything in the file it does not recognise, so the two ways of working can
 be mixed.
 
-Pitch is worth one note, because the number is not in hertz: the engine works
-out the pitch as 3 x Pitch - 49, and clamps the result to between 30 and 250
-hertz, so useful values run from about 27 to 99. The built-in male voice uses
-50, which is 101 hertz.
+Pitch is worth one note, because the number is not in hertz: each step is
+about 3 hertz, from 30 hertz at Pitch 26 to 250 hertz at Pitch 100. The
+built-in male voice uses 50, which is 101 hertz.
 
 You can call your voice anything. Behind the scenes it is given a name starting
 with its language, because the engine checks that and quietly ignores any voice
