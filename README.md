@@ -284,6 +284,36 @@ wire protocol, and the SAPI5 engine itself.
 
 Installers are on the [releases page](https://github.com/joshknnd1982/infovox230sapi5/releases).
 
+**1.1.2** — control tags in the text, and every voice at its proper pitch.
+Contributed by Aksel Christoffersen in
+[#1](https://github.com/joshknnd1982/infovox230-v22-sapi5/pull/1).
+
+- Fixed: every voice spoke at the wrong pitch. The pitch was handed to the
+  engine's `\Pit=` tag in hertz, but that tag is not in hertz — `\Pit=101\` is
+  Pitch 45, where the male voices are 50 — so the male voices came out lower
+  than they should and the female and child voices higher. Pitch is now set
+  exactly as the engine's own `PitchSet` sets it; the arithmetic is in
+  [`src/ivx_pitch.h`](src/ivx_pitch.h). The formula for Pitch in hertz given
+  here and in the configuration utility was wrong as well, and is corrected.
+- The engine's own control tags can be written into the text, as under SAPI4:
+  `\Pit=30\` for a deeper voice than any pitch control reaches, and
+  `\Vce=Speaker="Swedish Female"\` for another voice. See
+  [What the engine can and cannot do](#what-the-engine-can-and-cannot-do).
+  **Obey the engine's own control tags in the text**, under Engine settings in
+  the configuration utility, turns this off.
+- The voices are now called "Infovox230 American English Male" and so on,
+  rather than "Infovox American English Male", so they can be told apart from
+  other Infovox voices. Sections and `BasedOn` lines in `voices.ini` that use
+  the old names still work, and the configuration utility rewrites them with
+  the new ones. The voices' SAPI5 token names changed with them, so **a program
+  that remembers which voice you chose may need to be told again** after
+  upgrading.
+- Speak a test sentence, and the test at the end of setup, now say how many
+  voices and languages are actually installed, rather than always sixty in
+  twelve, with American English Male, British English Male or the first male
+  voice, whichever is there. They count only this engine's voices, recognised
+  by its COM class, rather than every voice whose vendor is Infovox.
+
 **1.1.1** — a voice you have just made speaks straight away.
 
 - Fixed: a new voice was published to the Windows voice list, in both
