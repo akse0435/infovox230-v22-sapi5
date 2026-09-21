@@ -90,12 +90,33 @@ Works: `\Spd=` rate, `\Pit=` pitch, `\Vol=` volume (0 gives digital silence),
 `\mrk=` bookmarks, word-position reporting, and phoneme input in both IPA and
 the engine's own alphabet.
 
+As under SAPI4, a program can also write the tags into the text it hands over:
+`\Pit=30\` in Balabolka gives a deeper voice than any pitch control reaches,
+and `\Vce=Speaker="Swedish Female"\` changes voice. All of the engine's tags
+except `\Eng` are obeyed, but only when exactly well formed, so a path such as
+`C:\Windows\System32` is still read out. A tag lasts to the end of what the
+program hands over in one go, and then the program's own voice and settings
+come back; `\Pau=` becomes real silence and `\Mrk=` a SAPI5 bookmark. The
+`ControlTags` setting turns this off.
+
+`\Vce=` takes `Speaker`, `Language`, `Accent`, `Gender` and `Age`. Unless it has
+been activated, which the copy here has not, the engine swallows `Speaker` and
+`Language` without changing voice, so those are carried out here instead: the
+text is split at the tag, and the rest goes to the voice named exactly as if the
+program had chosen it, at the rate, pitch and volume the program asked for.
+`Speaker` is one of this engine's own voices, by its name or the first name
+containing it; `Language` keeps the kind of voice, so Swedish Male becomes
+German Male. `Gender` and `Age` go to the engine, which changes the pitch and
+vocal tract shape of the voice in use rather than changing voice, and needs
+their values in quotes, which are added when left out. `Age` takes a word such
+as `child` or `adult`; a number is ignored.
+
 Does not work, and is handled here instead: `\Pau=` produces no pause, so
 silence is generated as exact PCM; `\Chr=` letter mode does nothing, so
 spelling separates the characters; the engine reports no viseme information at
 all, so none is offered.
 
-Six traps worth knowing, each of which cost a measurement to find:
+Seven traps worth knowing, each of which cost a measurement to find:
 
 - **The engine paces itself against the sound card.** It delivers one second of
   audio and then waits about 200 ms for its own timer before delivering the
@@ -113,6 +134,13 @@ Six traps worth knowing, each of which cost a measurement to find:
 - A control tag changes engine state **permanently**, across utterances. Every
   utterance therefore states its rate, pitch and volume in full rather than
   relying on what the last one left behind.
+- **`\Pit=` is not hertz.** `ITTSAttributes` gives pitch in hertz — Pitch 50
+  is reported as 101 Hz — but the tag sets the engine's Pitch to
+  `trunc(N × 100 / 220)`, so `\Pit=101\` is Pitch 45. `PitchGet` and `PitchSet`
+  also truncate in opposite directions, and selecting a voice goes through the
+  engine's own `PitchSet`, so a voice whose Pitch is 50 speaks at 49. The
+  prologue sets pitch exactly as `PitchSet` would; the arithmetic is in
+  [`src/ivx_pitch.h`](src/ivx_pitch.h).
 - Loudness is handed to the audio *device* (`IAudio::LevelSet`), not applied to
   the samples. A capture sink that only stores the level makes every volume
   control a silent no-op, so [the sink scales the PCM itself](src/ivx_engine.cpp).
@@ -149,7 +177,7 @@ is told:
 
 | Setting | What it does |
 | --- | --- |
-| `Pitch` | base pitch; the engine computes `3 × Pitch − 49` hertz and clamps to 30–250, so 27–99 is the useful range. The editor shows the hertz beside it as you type |
+| `Pitch` | base pitch; the engine reports `30 + 110 × (Pitch − 26) / 37` hertz, rounded down, from 30 Hz at Pitch 26 to 250 Hz at Pitch 100. The editor shows the hertz beside it as you type |
 | `Dynamic` | loudness contour, 0–100: higher is more forceful and more strongly stressed |
 | `Aspiration` | breathiness, 0–100 |
 | `FormantNo` | which of five vocal tract shapes; changes the character of a voice more than anything else here |
@@ -167,6 +195,7 @@ always reserved and nothing had ever read:
 | --- | --- | --- |
 | `TrimTrailingSilence`, `SilenceThreshold` | `1`, `16` | whether the ~0.8 s of inaudible padding at the end of an utterance is dropped, and what counts as inaudible |
 | `WordEvents`, `SentenceEvents` | `1`, `1` | whether positions in the text are reported while speaking |
+| `ControlTags` | `1` | whether the engine's own tags written into the text, such as `\Pit=30\`, are obeyed as they were under SAPI4 |
 | `TimeoutBaseMs`, `TimeoutPerCharMs` | `30000`, `200` | how long a wedged engine is waited for |
 | `RateMin/Max/Default`, `PitchMin/Max/Default` | `0` | override the range the engine reports for itself, which is what the ends of a program's rate and pitch controls reach. `0` means ask the engine |
 | `PreviewText` | — | what Preview speaks |

@@ -20,7 +20,9 @@ Start menu, under "Infovox 230":
 
   Infovox 230 Configuration define voices of your own, and change every
                             setting the engine has
-  Speak a test sentence     speaks aloud with the first Infovox voice
+  Speak a test sentence     says how many voices are installed, with
+                            American English Male, British English Male
+                            or the first Male voice, whichever is there
   List the Infovox voices   prints every voice, its language and gender
   Refresh the voice list    republishes the voices after editing voices.ini
   Read me                   this file
@@ -120,6 +122,16 @@ a key interrupts what is being said and starts the next line in about 40
 milliseconds, measured through Windows speech at twenty keypresses a second.
 Speech is synthesised at roughly fifty times faster than it is spoken, so the
 engine is never what you are waiting for.
+
+The engine's own control tags can be written straight into the text, as SAPI 4
+programs allowed: \Pit=30\ for a very deep voice, \Spd=250\ for speed,
+\Vol=32768\ for loudness, \Pau=500\ for a pause in milliseconds, \Rst\ to go
+back to the voice's own settings and \Vce=Speaker="Swedish Female"\ for another
+Infovox voice -- the first one whose name contains what is between the quotes.
+A tag lasts until the end of what the program hands over in one go, and then
+the program's own voice and settings come back. Anything that is not exactly a
+tag is read as text, and the tags can be turned off under Engine settings in
+the configuration utility.
 
 Two things this engine cannot do, so you know not to look for them: it produces
 no mouth-shape (viseme) information for talking-head animation, and its own
@@ -225,10 +237,9 @@ in %LOCALAPPDATA%\Infovox230SAPI\ for just yourself -- edit it, then use
 and anything in the file it does not recognise, so the two ways of working can
 be mixed.
 
-Pitch is worth one note, because the number is not in hertz: the engine works
-out the pitch as 3 x Pitch - 49, and clamps the result to between 30 and 250
-hertz, so useful values run from about 27 to 99. The built-in male voice uses
-50, which is 101 hertz.
+Pitch is worth one note, because the number is not in hertz: each step is
+about 3 hertz, from 30 hertz at Pitch 26 to 250 hertz at Pitch 100. The
+built-in male voice uses 50, which is 101 hertz.
 
 You can call your voice anything. Behind the scenes it is given a name starting
 with its language, because the engine checks that and quietly ignores any voice
@@ -245,7 +256,7 @@ A section named after a built-in voice does two things: it changes that voice,
 and it asks for it. So if the installer left out, say, American English Child
 but you installed American English, adding
 
-  [Infovox American English Child]
+  [Infovox230 American English Child]
   Pitch = 92
 
 to voices.ini puts that voice back as well as raising its pitch. A section
